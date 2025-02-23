@@ -227,9 +227,9 @@ def get_fit_eval_func(method, X, y, folds, metrics_names=['CI'], mode="CV", dir_
                 # Integral version from: https://lifelines.readthedocs.io/en/latest/fitters/regression/CoxPHFitter.html
 
                 if save_model:
-                    save_path = os.path.join("./", method.__name__, fold)
+                    save_path = os.path.join("./", method.__name__, str(fold))
                     if dir_path is not None:
-                        save_path = os.path.join(dir_path, method.__name__, fold)
+                        save_path = os.path.join(dir_path, method.__name__, str(fold))
 
                     os.makedirs(save_path, exist_ok=True)
 
