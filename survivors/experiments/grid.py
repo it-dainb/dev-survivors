@@ -3,6 +3,7 @@ import pandas as pd
 import time
 import os
 import pickle
+import joblib
 
 from sklearn.model_selection import StratifiedKFold, ParameterGrid, train_test_split
 # from sklearn.preprocessing import StandardScaler
@@ -132,7 +133,7 @@ def get_name_file(method, params, mode, fold):
     return "_".join(map(str, name_lst))
 
 
-def get_fit_eval_func(method, X, y, folds, metrics_names=['CI'], mode="CV", dir_path=None):
+def get_fit_eval_func(method, X, y, folds, metrics_names=['CI'], mode="CV", dir_path=None, save_model = False):
     """
     Return function, which on sample X, y apply cross-validation and calculate 
     metrics for each fold.
@@ -166,6 +167,8 @@ def get_fit_eval_func(method, X, y, folds, metrics_names=['CI'], mode="CV", dir_
         metr_lst = []
         exec_times = []
         exec_mem = []
+        fold_idx = []
+        
         fold = 0
         for X_train, y_train, X_test, y_test, bins in generate_sample(X, y, folds, mode):
             # print("X_train.shape:", X_train.shape)
@@ -223,13 +226,36 @@ def get_fit_eval_func(method, X, y, folds, metrics_names=['CI'], mode="CV", dir_
                 # pred_time = np.trapz(pred_sf, bins)
                 # Integral version from: https://lifelines.readthedocs.io/en/latest/fitters/regression/CoxPHFitter.html
 
+                if save_model:
+                    save_path = os.path.join("./", method.__name__, fold)
+                    if dir_path is not None:
+                        save_path = os.path.join(dir_path, method.__name__, fold)
+
+                    os.makedirs(save_path, exist_ok=True)
+
+                    try:
+                        est.save(save_path)
+                    except:
+                        joblib.dump(est, os.path.join(save_path, 'model.joblib'))
+                    
+                    joblib.dump((X_train, y_train), os.path.join(save_path, 'train.joblib'))
+                    joblib.dump((X_test, y_test), os.path.join(save_path, 'test.joblib'))
+
+                s_mem.append(check_memory())
+                survs = est.predict_survival_function(X_test)
+                hazards = est.predict_cumulative_hazard_function(X_test)
+                pred_sf = np.array(list(map(lambda x: x(bins), survs)))
+                pred_hf = np.array(list(map(lambda x: x(bins), hazards)))
+                pred_time = -1 * est.predict(X_test)
+
             exec_mem.append(max(s_mem) - min(s_mem))
             exec_times.append(time.time() - s_time)
             metr_lst.append(count_metric(y_train, y_test, pred_time,
                                          pred_sf, pred_hf, bins, metrics_names))
+            fold_idx.append(fold)
             fold += 1
             del est
-        return np.vstack(metr_lst), np.array(exec_times), np.array(exec_mem)
+        return np.vstack(metr_lst), np.array(exec_times), np.array(exec_mem), np.array(fold_idx)
     return f
 
 
@@ -323,23 +349,24 @@ class Experiments(object):
             else:
                 print(f"METRIC {metr_name} IS NOT DEFINED")
     
-    def run(self, X, y, dir_path=None, verbose=0):
+    def run(self, X, y, dir_path=None, verbose=0, save_model=False):
         self.dir_path = dir_path
         y["time"] = bins_scheme(y["time"], scheme=self.bins_sch)
         self.result_table = pd.DataFrame([], columns=["METHOD", "PARAMS", "TIME"] + self.metrics)
 
         for method, grid in zip(self.methods, self.methods_grid):
-            fit_eval_func = get_fit_eval_func(method, X, y, self.folds, self.metrics, self.mode, self.dir_path)
+            fit_eval_func = get_fit_eval_func(method, X, y, self.folds, self.metrics, self.mode, self.dir_path, save_model=save_model)
             print(method, grid)
 
             grid_params = ParameterGrid(grid)
             p_size = len(grid_params)
             for i_p, p in enumerate(grid_params):
                 try:
-                    eval_metr, exec_times, exec_mem = fit_eval_func(**p)
+                    eval_metr, exec_times, exec_mem, fold_idx = fit_eval_func(**p)
                     curr_dict = {"METHOD": method.__name__, "CRIT": p.get("criterion", ""), "PARAMS": str(p),
                                  "TIMES": exec_times, "TIME": np.sum(exec_times),
-                                 "MEMS": exec_mem, "MEM": np.sum(exec_mem)}
+                                 "MEMS": exec_mem, "MEM": np.sum(exec_mem),
+                                 "FOLD_IDX": fold_idx}
                     eval_metr = {m: eval_metr[:, i] for i, m in enumerate(self.metrics)}
                     curr_dict.update(eval_metr)
                     self.result_table = pd.concat([self.result_table, pd.DataFrame([curr_dict])], ignore_index=True)
@@ -370,7 +397,8 @@ class Experiments(object):
         self.is_table = True
 
     def run_effective(self, X, y, dir_path=None, verbose=0,
-                      stratify_best=["criterion", "balance", "leaf_model", "l_reg"]):
+                      stratify_best=["criterion", "balance", "leaf_model", "l_reg"],
+                      save_model=False):
         if not (self.mode in ["CV+SAMPLE"]):
             self.run(X, y, dir_path=dir_path, verbose=verbose)
             return None
@@ -387,10 +415,10 @@ class Experiments(object):
         old_mode = self.mode
         self.mode = "CV"
         self.run(X_tr, y_tr, dir_path=dir_path, verbose=verbose)
-        self.sample_table = self.eval_on_sample_by_best_params(X, y, folds=folds, stratify=stratify_best)
+        self.sample_table = self.eval_on_sample_by_best_params(X, y, folds=folds, stratify=stratify_best, save_model=save_model)
         self.mode = old_mode
 
-    def eval_on_sample_by_best_params(self, X, y, folds=20, stratify="criterion"):
+    def eval_on_sample_by_best_params(self, X, y, folds=20, stratify="criterion", save_model=False):
         best_table = self.get_best_by_mode(stratify=stratify)
         d = best_table.loc[:, ["METHOD", "PARAMS"]].to_dict(orient="tight")
         map_method_by_name = {m.__name__: m for m in self.methods}
@@ -402,7 +430,7 @@ class Experiments(object):
             params = eval(method_params[1])
             params = {k: [v] for k, v in params.items()}
             ho_exp.add_method(method, params)
-        ho_exp.run(X, y, dir_path=self.dir_path, verbose=1)
+        ho_exp.run(X, y, dir_path=self.dir_path, verbose=1, save_model=save_model)
         res_table = ho_exp.result_table.copy()
         for m in self.metrics:
             res_table[f"{m}_CV"] = best_table[m]
