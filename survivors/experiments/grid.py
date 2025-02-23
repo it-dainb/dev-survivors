@@ -227,9 +227,9 @@ def get_fit_eval_func(method, X, y, folds, metrics_names=['CI'], mode="CV", dir_
                 # Integral version from: https://lifelines.readthedocs.io/en/latest/fitters/regression/CoxPHFitter.html
 
                 if save_model:
-                    save_path = os.path.join("./", method.__name__, str(fold))
+                    save_path = os.path.join("./", method.__name__, fold)
                     if dir_path is not None:
-                        save_path = os.path.join(dir_path, method.__name__, str(fold))
+                        save_path = os.path.join(dir_path, method.__name__, fold)
 
                     os.makedirs(save_path, exist_ok=True)
 
@@ -478,8 +478,20 @@ class Experiments(object):
                 # "min" -> ascending order (i.e. ascending=True)
                 # For any other value (like "median" in a mixed list) default to ascending.
                 ascending_list = [c != "max" for c in choose]
+
+                def compute_sort_value(row, metrics, ascending_list):
+                    values = []
+
+                    for metric, is_ascending in zip(metrics, ascending_list):
+                        values.append(1 - row[metric] if is_ascending else row[metric])
+
+                    return sum(values) / len(values)
                 
-                sub_table_sorted = sub_table.sort_values(by=by_metric, ascending=ascending_list)
+                sub_table['SORT_VALUE'] = sub_table.apply(lambda row: compute_sort_value(row, by_metric, ascending_list), axis = 1)
+                sub_table_sorted = sub_table.sort_values(by='SORT_VALUE', ascending=False)
+                sub_table_sorted = sub_table_sorted.drop('SORT_VALUE', axis=1)
+                
+                # sub_table_sorted = sub_table.sort_values(by=by_metric, ascending=ascending_list)
                 best_row = sub_table_sorted.iloc[0]
 
             best_table = pd.concat([best_table, pd.DataFrame([best_row])], ignore_index=True)
