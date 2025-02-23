@@ -318,6 +318,7 @@ class Experiments(object):
         self.methods = []
         self.methods_grid = []
         self.metrics = ["CI"]
+        
         self.metric_best_p = "IBS"
         self.way_best_p = "min"
 
@@ -334,8 +335,12 @@ class Experiments(object):
 
     def add_metric_best(self, metric):
         if metric in self.metrics:
-            self.metric_best_p = metric
-            self.way_best_p = "min" if metric in metr.DESCEND_METRICS else "max"
+            if not isinstance(self.metric_best_p, list):
+                self.metric_best_p = []
+                self.way_best_p = []
+                
+            self.metric_best_p.append(metric)
+            self.way_best_p.append("min" if metric in metr.DESCEND_METRICS else "max")
 
     def add_method(self, method, grid):
         self.methods.append(method)
@@ -439,8 +444,19 @@ class Experiments(object):
 
     @staticmethod
     def get_agg_results(result_table, by_metric, choose="median", stratify="criterion"):
-        if not (by_metric in result_table.columns):
-            return None
+        # Convert inputs to lists if necessary.
+        if not isinstance(by_metric, list):
+            by_metric = [by_metric]
+        if not isinstance(choose, list):
+            choose = [choose] * len(by_metric)
+        if len(choose) != len(by_metric):
+            raise ValueError("by_metric and choose must have the same length")
+
+        # Ensure every metric is present in the table.
+        for metric in by_metric:
+            if metric not in result_table.columns:
+                return None
+
         df = result_table.copy()
         stratify_name = f"Stratify({stratify})"
         df[stratify_name] = df["PARAMS"].apply(lambda x: to_str_from_dict_list(eval(x), stratify))
@@ -451,35 +467,46 @@ class Experiments(object):
             sub_table = df[df["METHOD_FULL"] == method]
             if sub_table.shape[0] == 0:
                 continue
-            if choose == "max":
-                best_ind = sub_table[by_metric].idxmax()
-                if np.isnan(best_ind):
-                    continue
-                best_row = sub_table.loc[best_ind]
-            elif choose == "min":
-                best_ind = sub_table[by_metric].idxmin()
-                if np.isnan(best_ind):
-                    continue
-                best_row = sub_table.loc[best_ind]
-            else:
-                best_row = sub_table.sort_values(by=by_metric).iloc[sub_table.shape[0] // 2]
 
-            # best_table = best_table.append(dict(best_row), ignore_index=True)
-            best_table = pd.concat([best_table, pd.DataFrame([dict(best_row)])], ignore_index=True)
+            # If all choices are "median", use the median row based on the first metric.
+            if all(c == "median" for c in choose):
+                sub_table_sorted = sub_table.sort_values(by=by_metric[0])
+                best_row = sub_table_sorted.iloc[sub_table_sorted.shape[0] // 2]
+            else:
+                # For each metric, define the sort order:
+                # "max" -> descending order (i.e. ascending=False)
+                # "min" -> ascending order (i.e. ascending=True)
+                # For any other value (like "median" in a mixed list) default to ascending.
+                ascending_list = [c != "max" for c in choose]
+                
+                sub_table_sorted = sub_table.sort_values(by=by_metric, ascending=ascending_list)
+                best_row = sub_table_sorted.iloc[0]
+
+            best_table = pd.concat([best_table, pd.DataFrame([best_row])], ignore_index=True)
         return best_table
 
+    def fix_best_metric(self):
+        if isinstance(self.metric_best_p, str):
+            self.metric_best_p = [self.metric_best_p]
+
+        if isinstance(self.way_best_p, str):
+            self.way_best_p = [self.way_best_p]
+    
     def get_cv_result(self, stratify="criterion"):
-        df_cv_best = self.get_agg_results(self.result_table, self.metric_best_p + "_mean",
+        self.fix_best_metric()
+        df_cv_best = self.get_agg_results(self.result_table, [i + "_mean" for i in self.metric_best_p],
                                           choose=self.way_best_p, stratify=stratify)
         return df_cv_best
 
     def get_time_cv_result(self, stratify="criterion"):
-        df_time_cv_best = self.get_agg_results(self.result_table, self.metric_best_p + "_pred_mean",
+        self.fix_best_metric()
+        df_time_cv_best = self.get_agg_results(self.result_table, [i + "_pred_mean" for i in self.metric_best_p],
                                                choose=self.way_best_p, stratify=stratify)
         return df_time_cv_best
 
     def get_hold_out_result(self, stratify="criterion"):
-        df_hold_out_best = self.get_agg_results(self.result_table, self.metric_best_p + "_pred_mean",
+        self.fix_best_metric()
+        df_hold_out_best = self.get_agg_results(self.result_table, [i + "_pred_mean" for i in self.metric_best_p],
                                                 choose=self.way_best_p, stratify=stratify)
         rename_d = {m + "_pred_mean": m + "_CV_mean" for m in self.metrics}
         rename_d.update({m + "_last": m + "_HO" for m in self.metrics})
@@ -492,6 +519,8 @@ class Experiments(object):
         return self.sample_table
 
     def get_best_by_mode(self, stratify="criterion"):
+        self.fix_best_metric()
+        
         if self.mode == "CV":
             return self.get_cv_result(stratify=stratify)
         elif self.mode == "TIME-CV":
